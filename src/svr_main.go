@@ -3,8 +3,6 @@
 package main
 
 import (
-	"fmt"
-	"io"
 	"libs/log"
 	"net"
 	"net/http"
@@ -13,83 +11,74 @@ import (
 )
 
 const (
-	HTTP_HOST_PORT = ":10086"
+	WEBSOCK_HOST_PORT   = "0.0.0.0:8081"
+	WEBSOCK_CONNECT_URI = "/_ws4client"
+	WEBSOCK_CONTORL_URI = "/admin"
+
+	//暂时只支持 TCP 协议的 Forward，如http,ssh
+	FORWARD_LISTION_HOST_PORT = "0.0.0.0:8080"
 )
 
-func forward() {
+func ipforward(c net.Conn) {
+	//只支持 TCP 协议的 Forward，如http,ssh
+	log.Info("new connect [%s]", c.RemoteAddr())
+	defer c.Close()
+	err := svr.BindConnection(c)
+
+	if err != nil {
+		log.Error("Forward PutConnection err=%s", err.Error())
+		c.Write([]byte(err.Error()))
+	}
+}
+
+func ListenAndIPForwardServ(hostAndPort string) {
 	// Listen on TCP port 2000 on all interfaces.
-	l, err := net.Listen("tcp", ":2000")
+	l, err := net.Listen("tcp", hostAndPort)
 	if err != nil {
 		log.Error(err.Error())
 	}
-	log.Info("Listening TCP :2000")
+	log.Info("IP Forward Listening TCP[%s]", hostAndPort)
 	defer l.Close()
 	for {
 		// Wait for a connection.
 		conn, err := l.Accept()
 		if err != nil {
-			log.Error("Accept err=%s", err.Error())
+			log.Error("IP-Forward Accept err=%s", err.Error())
+			continue
 		}
-		// Handle the connection in a new goroutine.
-		// The loop then returns to accepting, so that
-		// multiple connections may be served concurrently.
-		go func(c net.Conn) {
-			log.Info("new connect [%s]", c.RemoteAddr())
-			//MAX-REUQEST size is 4096 pre-time
-			p := make([]byte, 4096)
-			n, err := c.Read(p)
-			if err != nil {
-				err := fmt.Errorf("Read err=%s", err.Error())
-				log.Error(err.Error())
-				c.Write([]byte(err.Error()))
-				// svr.CloseRequest(c)
-			} else {
-				log.Info("read n=%d, len=%d", n, len(p))
-				svr.SendRequestConn(p[:n], c)
-
-			}
-			c.Close()
-		}(conn)
-
+		// handle socket data recv and send
+		go ipforward(conn)
 	}
+	log.Info("ListenAndIPForwardServ exit.")
 }
 
-func httpHandler(w http.ResponseWriter, r *http.Request) {
-	log.Info("httpHandler: %s %s %s", r.Method, r.URL.RequestURI(), r.RemoteAddr)
+func ListenWebsocketServ(hostAndPort string, websocketURI, contorlURI string) {
+	// TODO：连接认证
+	http.HandleFunc(websocketURI, svr.WebsocketHandler)
 
-	var buff string = fmt.Sprintf("GET %s HTTP/1.1\r\nUser-Agent:test\r\nHost: 10.20.151.151:8080\r\nAccept: */*\r\n\r\n",
-		r.URL.RequestURI())
+	http.HandleFunc(contorlURI, svr.HttpAdminHandler)
 
-	svr.SendRequest([]byte(buff), w)
-	return
-	w.Header().Set("Content-Type", "text/html")
-	io.WriteString(w, string("Content-Type: text/html\n"))
-	io.WriteString(w, fmt.Sprintf("TODO: %s %s", r.Method, r.URL.Path))
-	io.WriteString(w, buff)
-}
-
-func main() {
-
-	log.SetLevel(log.LevelDebug)
-
-	http.HandleFunc("/_ws4client", svr.WebsocketHandler)
-
-	http.HandleFunc("/", httpHandler)
-
-	log.Info("Server Listen to: %v", HTTP_HOST_PORT)
+	log.Info("Websocket Listen in TCP[%s]", hostAndPort)
 	svr := &http.Server{
-		Addr:           HTTP_HOST_PORT,
+		Addr:           hostAndPort,
 		Handler:        nil,
 		ReadTimeout:    0 * time.Second,
 		WriteTimeout:   0 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
 
-	go forward()
 	err := svr.ListenAndServe()
 
 	if err != nil {
-		log.Error("ListenAndServe[%v], err=[%v]", HTTP_HOST_PORT, err.Error())
+		log.Error("ListenAndServe[%v], err=[%v]", hostAndPort, err.Error())
 	}
+	log.Info("ListenWebsocketServ exit.")
+}
 
+func main() {
+
+	log.SetLevel(log.LevelDebug)
+
+	go ListenAndIPForwardServ(FORWARD_LISTION_HOST_PORT)
+	ListenWebsocketServ(WEBSOCK_HOST_PORT, WEBSOCK_CONNECT_URI, WEBSOCK_CONTORL_URI)
 }

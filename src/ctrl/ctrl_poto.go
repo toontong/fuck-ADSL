@@ -9,7 +9,9 @@ const (
 	Msg_Sys            = 0x00001000
 	Msg_Sys_Ok         = 0x00001000 // 4096
 	Msg_Sys_Err        = 0x00001001
-	Msg_Request_Finish = 0x00001002
+	Msg_New_Connection = 0x00001002
+	Msg_Request_Finish = 0x00001003
+	Msg_Client_Busy    = 0x00001004
 )
 
 //使用 websocket Text-Frame作为控制流。每Frame都是JSON格式
@@ -36,6 +38,8 @@ func (ctrl *WebSocketControlFrame) Bytes() []byte {
 }
 
 var RquestFinishFrame []byte
+var ClientBusyFrame []byte
+var NewConnecttion []byte
 
 var msgString map[int64]string
 
@@ -47,10 +51,19 @@ func init() {
 	}
 	RquestFinishFrame = frame.Bytes()
 
+	frame.Type = Msg_Client_Busy
+	ClientBusyFrame = frame.Bytes()
+
+	frame.Type = Msg_New_Connection
+	NewConnecttion = frame.Bytes()
+
 	msgString = make(map[int64]string, 128)
 	msgString[Msg_Sys_Ok] = "OK"
 	msgString[Msg_Sys_Err] = "Err"
+	msgString[Msg_New_Connection] = "New-Conn"
 	msgString[Msg_Request_Finish] = "Req-finish"
+	msgString[Msg_Client_Busy] = "Cli-Busy"
+
 }
 
 func (this *WebSocketControlFrame) TypeS() string {

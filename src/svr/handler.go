@@ -5,8 +5,6 @@
 package svr
 
 import (
-	"bufio"
-	"bytes"
 	"ctrl"
 	"encoding/json"
 	"fmt"
@@ -14,22 +12,21 @@ import (
 	"io"
 	"libs/log"
 	"libs/websocket"
+	"net"
 	"net/http"
-	"net/textproto"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
 
 type wsClient struct {
-	WSocket    *websocket.Conn
-	Working    bool
-	RW         *sync.RWMutex
-	Req        *http.Request
-	RespWriter http.ResponseWriter
-	finish     chan int
-	Writer     io.Writer
+	WSocket *websocket.Conn
+	Req     *http.Request // websoket 对应的 Request
+
+	RW      *sync.RWMutex
+	Working bool //是否有绑定ip-forward
+
+	finish chan int       // 绑定连接的是否完成
+	Writer io.WriteCloser // ip-forward 绑定的连接
 }
 
 type onlineHost struct {
@@ -54,81 +51,6 @@ func (client *wsClient) String() string {
 	return client.Req.RemoteAddr
 }
 
-func (client *wsClient) writeRespone(buff []byte) error {
-	r := bufio.NewReader(bytes.NewReader(buff))
-	tp := textproto.NewReader(r)
-
-	resp := &http.Response{
-		Request: nil,
-	}
-	// Parse the first line of the response.
-	line, err := tp.ReadLine()
-	if err != nil {
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
-		}
-		return err
-	}
-	f := strings.SplitN(line, " ", 3)
-	if len(f) < 2 {
-		return fmt.Errorf("malformed HTTP response[%s]", line)
-	}
-	reasonPhrase := ""
-	if len(f) > 2 {
-		reasonPhrase = f[2]
-	}
-	resp.Status = f[1] + " " + reasonPhrase
-	resp.StatusCode, err = strconv.Atoi(f[1])
-	if err != nil {
-		return fmt.Errorf("malformed HTTP status code[%s]", f[1])
-	}
-
-	resp.Proto = f[0]
-	var ok bool
-	if resp.ProtoMajor, resp.ProtoMinor, ok = http.ParseHTTPVersion(resp.Proto); !ok {
-		return fmt.Errorf("malformed HTTP version[%s]", resp.Proto)
-	}
-
-	// Parse the response headers.
-	mimeHeader, err := tp.ReadMIMEHeader()
-	if err != nil {
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
-		}
-		return err
-	}
-	respWriter := client.RespWriter
-	for key, values := range mimeHeader {
-		for _, val := range values {
-			log.Info("Add header %s:%s", key, val)
-			respWriter.Header().Set(key, val)
-		}
-	}
-
-	// send the header and status-code
-	respWriter.WriteHeader(resp.StatusCode)
-	for {
-		// send the body
-		p := make([]byte, 4096)
-		n, err := r.Read(p)
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			log.Error("Read body err=%s", err.Error())
-			return err
-		} else {
-			log.Info("Send body-size=%d", n)
-			_, err := respWriter.Write(p)
-			if err != nil {
-				log.Error("Send body err=%s", err.Error())
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
 func (c *wsClient) handlerControlMessage(bFrame []byte) error {
 	msg := ctrl.WebSocketControlFrame{}
 
@@ -136,22 +58,40 @@ func (c *wsClient) handlerControlMessage(bFrame []byte) error {
 		log.Warn("Recve a Text-Frame not JSON format. err=%v, frame=%v", err.Error(), string(bFrame))
 		return err
 	}
-	log.Info("TCP[%v] Get Frame T[%v], Content=%v, index=%v, ", c, msg.TypeS(), msg.Content, msg.Index)
+	log.Debug("TCP[%v] Get Frame T[%v], Content=%v, index=%v, ", c, msg.TypeS(), msg.Content, msg.Index)
 
 	switch msg.Type {
 	case ctrl.Msg_Request_Finish:
-		c.close()
+		c.closeWriter()
+	case ctrl.Msg_Client_Busy:
+		c.Writer.Write([]byte("current client was busy, pls try anthor."))
+		c.closeWriter()
+	case ctrl.Msg_Sys_Err:
+		c.Writer.Write([]byte(msg.Content))
+		c.closeWriter()
 	default:
 		log.Warn("no handler Msg T[%s]", msg.TypeS())
 	}
 	return nil
 }
 
-func (c *wsClient) close() {
-	if c.Working {
-		c.finish <- 1
+func (c *wsClient) closeWriter() {
+	if c.Writer == nil {
+		log.Warn("whan to close an nil client.Writer.")
+		return
 	}
+	c.RW.Lock()
+	defer c.RW.Unlock()
+	c.Writer.Close()
 	c.Working = false
+}
+
+func (c *wsClient) tellClientRequestFinish() {
+	c.WSocket.WriteString(ctrl.RquestFinishFrame)
+}
+
+func (c *wsClient) tellClientNewConnection() {
+	c.WSocket.WriteString(ctrl.NewConnecttion)
 }
 
 func (client *wsClient) WaitForFrameLoop() {
@@ -167,7 +107,7 @@ func (client *wsClient) WaitForFrameLoop() {
 			} else {
 				log.Debug("TCP[%s] close the socket. EOF.", client)
 			}
-			client.close()
+			client.closeWriter()
 			return
 		}
 
@@ -176,15 +116,22 @@ func (client *wsClient) WaitForFrameLoop() {
 			client.handlerControlMessage(bFrame)
 		case websocket.CloseMessage:
 			log.Info("TCP[%s] close Frame revced. end wait Frame loop", client)
-			client.close()
+			client.closeWriter()
 			return
 		case websocket.BinaryMessage:
 			log.Info("TCP[%s] resv-binary: %v", client, len(bFrame))
+			if client.Writer == nil {
+				log.Warn("client.Writer is nil.")
+				continue
+			}
 
 			_, err := client.Writer.Write(bFrame)
 			if err != nil {
-				log.Error(err.Error())
-				client.WSocket.WriteString(ctrl.RquestFinishFrame)
+				if err != io.EOF {
+					log.Error(err.Error())
+				}
+				client.tellClientRequestFinish()
+				client.closeWriter()
 			}
 
 		case websocket.PingMessage, websocket.PongMessage: // IE-11 会无端端发一个pong上来
@@ -217,38 +164,33 @@ func getFreeClient() (*wsClient, error) {
 	return client, nil
 }
 
-func SendRequestConn(buffer []byte, w io.Writer) error {
-	client, err := getFreeClient()
-	if err != nil {
-		return err
-	}
-	log.Info("send request to -> TCP[%s] - %s", client, buffer)
-	client.Writer = w
-	client.WSocket.Write(buffer, true)
-
-	var finish int
-	finish = <-client.finish
-	client.Working = false
-	log.Info("Request finish[%d].", finish)
-
-	return nil
-}
-
-func SendRequest(buffer []byte, w http.ResponseWriter) error {
+func BindConnection(conn net.Conn) error {
+	// 与一个websocket 绑定一个连接
 	client, err := getFreeClient()
 	if err != nil {
 		return err
 	}
 
-	log.Info("send request to -> TCP[%s] - %s", client, buffer)
-	client.RespWriter = w
-	client.Writer = w
-	client.WSocket.Write(buffer, true)
+	client.Writer = conn.(io.WriteCloser)
+	client.tellClientNewConnection()
 
-	var finish int
-	finish = <-client.finish
-	client.Working = false
-	log.Info("Request finish[%d].", finish)
+	reader := conn.(io.Reader)
+	p := make([]byte, 4096)
+
+	for {
+		n, err := reader.Read(p)
+		if err != nil {
+			if err != io.EOF {
+				log.Error("Reading data from[%s] err=%s", conn.RemoteAddr(), err.Error())
+			}
+			client.closeWriter()
+			break
+		}
+		client.WSocket.Write(p[:n], true)
+	}
+
+	log.Info("BindConnection Request finish.")
+
 	return nil
 }
 
