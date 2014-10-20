@@ -6,6 +6,10 @@ import (
 )
 
 const (
+	WEBSOCKET_CONNECT_URI = "/_ws4client"
+)
+
+const (
 	Msg_Sys            = 0x00001000
 	Msg_Sys_Ok         = 0x00001000 // 4096
 	Msg_Sys_Err        = 0x00001001

@@ -8,6 +8,7 @@ import (
 	"libs/log"
 	"libs/websocket"
 	"net"
+	"net/url"
 	"sync"
 )
 
@@ -155,50 +156,6 @@ func (c *Client) readForward(reader io.Reader) {
 	c.closeLoalNetworkConnection(true)
 }
 
-func (c *Client) forward(buffIn []byte, w io.Writer) {
-	if c.localConn != nil {
-		log.Warn("thread is busy. can not create new connect.")
-		c.tellServBusy()
-		return
-	}
-	conn, err := net.Dial("tcp", g_localForwardHostAndPort)
-
-	if err != nil {
-		log.Error("Connect to[%s] err=%s", g_localForwardHostAndPort, err.Error())
-		goto exit_requestFinish
-	}
-	defer conn.Close()
-	c.localConn = &conn
-
-	_, err = conn.Write(buffIn)
-	if err != nil {
-		log.Error("Write buff to[%s] err=%s", g_localForwardHostAndPort, err.Error())
-		goto exit_requestFinish
-	}
-
-	for {
-		p := make([]byte, 4096)
-		n, err := conn.Read(p)
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			log.Error("When Read err=%s", err.Error())
-			w.Write([]byte(err.Error()))
-			goto exit_requestFinish
-		}
-		w.Write(p[:n])
-	}
-
-exit_requestFinish:
-
-	if err != nil {
-		log.Error("forward err=%s", err.Error())
-	}
-	c.localConn = nil
-	log.Info("tell Serv Request-Finish.")
-	c.tellServRequestFinish()
-}
-
 func (c *Client) close() {
 	if c.localConn != nil {
 		(*c.localConn).Close()
@@ -225,7 +182,7 @@ func (c *Client) handlerControlFrame(bFrame []byte) error {
 	return nil
 }
 
-func (client *Client) WaitForCommand() {
+func (client *Client) waitForCommand() {
 	for {
 		frameType, bFrame, err := client.WSocket.Read()
 		log.Debug("TCP[%s] recv WebSocket Frame typ=[%v] size=[%d], crc32=[%d]",
@@ -257,4 +214,35 @@ func (client *Client) WaitForCommand() {
 			log.Warn("TODO: revce frame-type=%v. can not handler. content=%v", TypeS(frameType), string(bFrame))
 		}
 	}
+}
+
+func Connect2Serv(serv string) {
+
+	websockURI := ctrl.WEBSOCKET_CONNECT_URI
+
+	conn, err := net.Dial("tcp", serv)
+	if err != nil {
+		log.Error(err.Error())
+		return
+	}
+
+	ws, _, err := websocket.NewClient(conn, &url.URL{Host: serv, Path: websockURI}, nil)
+	if err != nil {
+		log.Error("Connect to[%s] err=%s", serv, err.Error())
+		return
+	}
+
+	ws.Ping([]byte("Ping"))
+	msgType, _, err := ws.Read()
+	if msgType != websocket.PongMessage {
+		log.Error("Unexpected frame Type[%d]", msgType)
+		return
+	}
+
+	client := NewClient(ws)
+
+	log.Info("Connect[%s] websocket[%s] success, wait for server command.", serv, websockURI)
+	client.waitForCommand()
+
+	log.Info("client thread exist.")
 }

@@ -2,58 +2,49 @@ package main
 
 import (
 	"cli"
+	"flag"
 	"libs/log"
-	"libs/websocket"
-	"net"
-	"net/url"
 )
 
 const (
-	SVR_HOST_IP         = "127.0.0.1:8081"
-	WEBSOCK_CONNECT_URI = "/_ws4client"
-
-	FORWARD_HOST_IP = "10.20.151.151:8080"
-	MIN_THREAD      = 4
+	//WEBSOCKET_SVR_HOST_IP         = "127.0.0.1:8081"
+	//LOCAL_NETWORK_FORWARD_HOST_IP = "10.20.151.151:8080"
+	MIN_THREAD = 4
 )
 
-func connect2Serv(serv, websockURI string) {
-	conn, err := net.Dial("tcp", serv)
-	if err != nil {
-		log.Error(err.Error())
-		return
-	}
+var globalForwardServer string
+var globalAuthUserPassword string
+var globalForwardTHread int
 
-	ws, _, err := websocket.NewClient(conn, &url.URL{Host: serv, Path: websockURI}, nil)
-	if err != nil {
-		log.Error("Connect to[%s] err=%s", serv, err.Error())
-		return
-	}
+// read from the host and port in the local-network
+var globalLocalNetworkHost string
 
-	ws.Ping([]byte("test"))
-	msgType, _, err := ws.Read()
-	if msgType != websocket.PongMessage {
-		log.Error("Unexpected frame Type[%d]", msgType)
-		return
-	}
+var globalLogLevel string
 
-	client := cli.NewClient(ws)
-
-	log.Info("Connect[%s] websocket[%s] success, wait for server command.", serv, websockURI)
-	client.WaitForCommand()
-
-	log.Info("client thread exist.")
+func init() {
+	flag.StringVar(&globalForwardServer, "for", "114.114.114.114:8081", "websocket connect to [14.114.114.114:8080] for TCP-data forward.")
+	flag.StringVar(&globalAuthUserPassword, "auth", "", "websocket connect used auth string[username:passwrod], default is no auth.")
+	flag.StringVar(&globalLocalNetworkHost, "host", "192.168.1.101:8080", "local-network host which can not listion WLAN-IP.")
+	flag.StringVar(&globalLogLevel, "log", "warn", "log level [warn|error|debug|info], output the stdout.")
+	flag.IntVar(&globalForwardTHread, "n", MIN_THREAD, "conut of the thread which read for local-host to the forward-server, min is 4.")
 }
 
 func main() {
+	flag.Parse()
+	log.Info("start app, Read From[%s], forward data To[%s], auth[%s] log-level[%s].",
+		globalLocalNetworkHost, globalForwardServer, globalAuthUserPassword, globalLogLevel)
 
-	log.SetLevel(log.LevelDebug)
+	log.SetLevelByName(globalLogLevel)
 
-	cli.SetLocalForardHostAndPort(FORWARD_HOST_IP)
-
-	for i := 0; i < MIN_THREAD-1; i++ {
-		go connect2Serv(SVR_HOST_IP, WEBSOCK_CONNECT_URI)
+	if globalForwardTHread < MIN_THREAD {
+		globalForwardTHread = MIN_THREAD
 	}
-	connect2Serv(SVR_HOST_IP, WEBSOCK_CONNECT_URI)
+
+	cli.SetLocalForardHostAndPort(globalLocalNetworkHost)
+	for i := 0; i < globalForwardTHread-1; i++ {
+		go cli.Connect2Serv(globalForwardServer)
+	}
+	cli.Connect2Serv(globalForwardServer)
 
 	log.Info("main end .")
 }

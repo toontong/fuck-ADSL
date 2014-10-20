@@ -3,6 +3,8 @@
 package main
 
 import (
+	"ctrl"
+	"flag"
 	"libs/log"
 	"net"
 	"net/http"
@@ -11,10 +13,8 @@ import (
 )
 
 const (
-	WEBSOCK_HOST_PORT   = "0.0.0.0:8081"
-	WEBSOCK_CONNECT_URI = "/_ws4client"
-	WEBSOCK_CONTORL_URI = "/admin"
-
+	//WEBSOCKET_HOST_PORT   = "0.0.0.0:8081"
+	WEBSOCKET_CONTORL_URI = "/admin"
 	//暂时只支持 TCP 协议的 Forward，如http,ssh
 	FORWARD_LISTION_HOST_PORT = "0.0.0.0:8080"
 )
@@ -75,10 +75,26 @@ func ListenWebsocketServ(hostAndPort string, websocketURI, contorlURI string) {
 	log.Info("ListenWebsocketServ exit.")
 }
 
+var globalWebsocketListion string
+var globalForwardListtion string
+var globalAuthUserPassword string
+var globalLogLevel string
+
+func init() {
+	flag.StringVar(&globalForwardListtion, "tcp", "0.0.0.0:8080", "listion[0.0.0.0:8080] of tcp data forward.")
+	flag.StringVar(&globalWebsocketListion, "ws", "0.0.0.0:8081", "websocket listion host[0.0.0.0:8081]")
+	flag.StringVar(&globalAuthUserPassword, "auth", "", "websocket connect used auth string[username:passwrod], default is no auth.")
+	flag.StringVar(&globalLogLevel, "log", "warn", "log level [warn|error|debug|info], output the stdout.")
+}
+
 func main() {
+	flag.Parse()
 
-	log.SetLevel(log.LevelDebug)
+	log.Info("app start forward[%s] websocket[%s] auth[%s] log-level[%s], ",
+		globalForwardListtion, globalWebsocketListion, globalAuthUserPassword, globalLogLevel)
 
-	go ListenAndIPForwardServ(FORWARD_LISTION_HOST_PORT)
-	ListenWebsocketServ(WEBSOCK_HOST_PORT, WEBSOCK_CONNECT_URI, WEBSOCK_CONTORL_URI)
+	log.SetLevelByName(globalLogLevel)
+
+	go ListenAndIPForwardServ(globalForwardListtion)
+	ListenWebsocketServ(globalWebsocketListion, ctrl.WEBSOCKET_CONNECT_URI, WEBSOCKET_CONTORL_URI)
 }
