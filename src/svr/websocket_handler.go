@@ -41,6 +41,10 @@ type allHosts struct {
 
 var TypeS = websocket.MsgTypeS
 
+func init() {
+	println("svr.websocket.init")
+}
+
 // ==================
 var globalAllHosts = &allHosts{
 	Hosts: make(map[string]*onlineHost),
@@ -94,7 +98,7 @@ func (c *wsClient) tellClientNewConnection() {
 	c.WSocket.WriteString(ctrl.NewConnecttion)
 }
 
-func (client *wsClient) WaitForFrameLoop() {
+func (client *wsClient) waitForFrameLoop() {
 	for {
 		frameType, bFrame, err := client.WSocket.Read()
 
@@ -164,7 +168,7 @@ func getFreeClient() (*wsClient, error) {
 	return client, nil
 }
 
-func BindConnection(conn net.Conn) error {
+func bindConnection(conn net.Conn) error {
 	// 与一个websocket 绑定一个连接
 	client, err := getFreeClient()
 	if err != nil {
@@ -225,7 +229,7 @@ func WebsocketHandler(w http.ResponseWriter, r *http.Request) {
 	host.MapClients[r.RemoteAddr] = client
 	globalAllHosts.RW.RUnlock()
 	log.Info("Put[%s] in", client)
-	client.WaitForFrameLoop()
+	client.waitForFrameLoop()
 
 	globalAllHosts.RW.RLock()
 	delete(host.MapClients, r.RemoteAddr)
