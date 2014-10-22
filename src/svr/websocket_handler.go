@@ -39,7 +39,7 @@ type allHosts struct {
 	RW    *sync.RWMutex
 }
 
-var TypeS = websocket.MsgTypeS
+var frameTypStr = websocket.MsgTypeS
 
 func init() {
 	println("svr.websocket.init")
@@ -62,7 +62,7 @@ func (c *wsClient) handlerControlMessage(bFrame []byte) error {
 		log.Warn("Recve a Text-Frame not JSON format. err=%v, frame=%v", err.Error(), string(bFrame))
 		return err
 	}
-	log.Debug("TCP[%v] Get Frame T[%v], Content=%v, index=%v, ", c, msg.TypeS(), msg.Content, msg.Index)
+	log.Debug("TCP[%v] Get Frame T[%v], Content=%v, index=%v, ", c, msg.TypeStr(), msg.Content, msg.Index)
 
 	switch msg.Type {
 	case ctrl.Msg_Request_Finish:
@@ -73,8 +73,9 @@ func (c *wsClient) handlerControlMessage(bFrame []byte) error {
 	case ctrl.Msg_Sys_Err:
 		c.Writer.Write([]byte(msg.Content))
 		c.closeWriter()
+	case ctrl.Msg_Get_Config:
 	default:
-		log.Warn("no handler Msg T[%s]", msg.TypeS())
+		log.Warn("no handler Msg T[%s]", msg.TypeStr())
 	}
 	return nil
 }
@@ -98,12 +99,16 @@ func (c *wsClient) tellClientNewConnection() {
 	c.WSocket.WriteString(ctrl.NewConnecttion)
 }
 
+func (c *wsClient) tellClientNeedConfig() {
+	c.WSocket.WriteString(ctrl.GetClientConfig)
+}
+
 func (client *wsClient) waitForFrameLoop() {
 	for {
 		frameType, bFrame, err := client.WSocket.Read()
 
 		log.Debug("TCP[%s] recv WebSocket Frame typ=[%v] size=[%d], crc32=[%d]",
-			client, TypeS(frameType), len(bFrame), crc32.ChecksumIEEE(bFrame))
+			client, frameTypStr(frameType), len(bFrame), crc32.ChecksumIEEE(bFrame))
 
 		if err != nil {
 			if err != io.ErrUnexpectedEOF {
@@ -141,7 +146,7 @@ func (client *wsClient) waitForFrameLoop() {
 		case websocket.PingMessage, websocket.PongMessage: // IE-11 会无端端发一个pong上来
 			client.WSocket.Pong(bFrame)
 		default:
-			log.Warn("TODO: revce frame-type=%v. can not handler. content=%v", TypeS(frameType), string(bFrame))
+			log.Warn("TODO: revce frame-type=%v. can not handler. content=%v", frameTypStr(frameType), string(bFrame))
 		}
 	}
 }
@@ -200,6 +205,12 @@ func bindConnection(conn net.Conn) error {
 
 func WebsocketHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info("WebsocketHandler:%s %s %s", r.RemoteAddr, r.Method, r.URL.Path)
+
+	if !authOK(r) {
+		noAuthResponse(w)
+		return
+	}
+
 	var conn *websocket.Conn
 	conn, err := websocket.Upgrade(w, r, http.Header{})
 	if err != nil {

@@ -2,28 +2,37 @@ package cli
 
 import (
 	"ctrl"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"libs/log"
 	"libs/websocket"
 	"net"
+	"net/http"
 	"net/url"
 	"sync"
 )
 
 const (
 	Default_Buffer_Size = 4096
-
 	// chan using memory is Channel_Size * Default_Buffer_Size
 	Default_Channel_Size = 4
 )
 
-var TypeS = websocket.MsgTypeS
+var frameTypStr = websocket.MsgTypeS
+
+type Config struct {
+	LocalHostServ string `json:"LocalHostServ"`
+	WebsocketAuth string `json:"WebsocketAuth"`
+}
+
+var pConfig *Config
 
 var g_localForwardHostAndPort string
 
-func SetLocalForardHostAndPort(hostAndPort string) {
+func setLocalForardHostAndPort(hostAndPort string) {
 	g_localForwardHostAndPort = hostAndPort
 }
 
@@ -169,7 +178,7 @@ func (c *Client) handlerControlFrame(bFrame []byte) error {
 		log.Error("Recve a Text-Frame not JSON format. err=%v, frame=%v", err.Error(), string(bFrame))
 		return err
 	}
-	log.Info("TCP[%v] Get Frame T[%v], Content=%v, index=%v, ", c, msg.TypeS(), msg.Content, msg.Index)
+	log.Info("TCP[%v] Get Frame T[%v], Content=%v, index=%v, ", c, msg.TypeStr(), msg.Content, msg.Index)
 
 	switch msg.Type {
 	case ctrl.Msg_Request_Finish:
@@ -177,7 +186,7 @@ func (c *Client) handlerControlFrame(bFrame []byte) error {
 	case ctrl.Msg_New_Connection:
 		c.connect2LoalNetwork()
 	default:
-		log.Warn("no handler Msg T[%s]", msg.TypeS())
+		log.Warn("no handler Msg T[%s]", msg.TypeStr())
 	}
 	return nil
 }
@@ -186,7 +195,7 @@ func (client *Client) waitForCommand() {
 	for {
 		frameType, bFrame, err := client.WSocket.Read()
 		log.Debug("TCP[%s] recv WebSocket Frame typ=[%v] size=[%d], crc32=[%d]",
-			client, TypeS(frameType), len(bFrame), crc32.ChecksumIEEE(bFrame))
+			client, frameTypStr(frameType), len(bFrame), crc32.ChecksumIEEE(bFrame))
 
 		if err != nil {
 			if err != io.ErrUnexpectedEOF {
@@ -211,24 +220,39 @@ func (client *Client) waitForCommand() {
 		case websocket.PingMessage, websocket.PongMessage: // IE-11 会无端端发一个pong上来
 			client.WSocket.Pong(bFrame)
 		default:
-			log.Warn("TODO: revce frame-type=%v. can not handler. content=%v", TypeS(frameType), string(bFrame))
+			log.Warn("TODO: revce frame-type=%v. can not handler. content=%v", frameTypStr(frameType), string(bFrame))
 		}
 	}
 }
 
-func Connect2Serv(serv string) {
+func Connect2Serv(forwardServ string, conf *Config) {
+	if conf == nil {
+		log.Error("config is nil.")
+		return
+	}
+	// global pConfig
+	pConfig = conf
+
+	var localServ, auth = conf.LocalHostServ, conf.WebsocketAuth
+
+	setLocalForardHostAndPort(localServ)
 
 	websockURI := ctrl.WEBSOCKET_CONNECT_URI
 
-	conn, err := net.Dial("tcp", serv)
+	conn, err := net.Dial("tcp", forwardServ)
 	if err != nil {
 		log.Error(err.Error())
 		return
 	}
+	var headers http.Header
+	if auth != "" {
+		headers = http.Header{}
+		headers.Add("Authorization", fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(auth))))
+	}
 
-	ws, _, err := websocket.NewClient(conn, &url.URL{Host: serv, Path: websockURI}, nil)
+	ws, _, err := websocket.NewClient(conn, &url.URL{Host: forwardServ, Path: websockURI}, headers)
 	if err != nil {
-		log.Error("Connect to[%s] err=%s", serv, err.Error())
+		log.Error("Connect to[%s] err=%s", forwardServ, err.Error())
 		return
 	}
 

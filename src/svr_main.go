@@ -3,17 +3,9 @@
 package main
 
 import (
-	"ctrl"
 	"flag"
 	"libs/log"
 	"svr"
-)
-
-const (
-	//WEBSOCKET_HOST_PORT   = "0.0.0.0:8081"
-	WEBSOCKET_CONTORL_URI = "/admin"
-	//暂时只支持 TCP 协议的 Forward，如http,ssh
-	FORWARD_listen_HOST_PORT = "0.0.0.0:8080"
 )
 
 var _Websocketlisten string
@@ -36,6 +28,7 @@ func main() {
 
 	log.SetLevelByName(_LogLevel)
 
-	go svr.ListenAndIPForwardServ(_ForwardListtion)
-	svr.ListenWebsocketServ(_Websocketlisten, ctrl.WEBSOCKET_CONNECT_URI, WEBSOCKET_CONTORL_URI)
+	var conf = &svr.Config{Auth: _AuthUserPassword}
+
+	svr.ListenIPForwardAndWebsocketServ(_ForwardListtion, _Websocketlisten, conf)
 }

@@ -12,7 +12,12 @@ func init() {
 
 func HttpAdminHandler(w http.ResponseWriter, r *http.Request) {
 	//　TODO：　做web控制后台
-	log.Info("httpHandler: %s %s %s", r.Method, r.URL.RequestURI(), r.RemoteAddr)
+	log.Info("admin Handler: %s %s %s", r.Method, r.URL.RequestURI(), r.RemoteAddr)
+
+	if !authOK(r) {
+		noAuthResponse(w)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html")
 
