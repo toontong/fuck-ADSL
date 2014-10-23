@@ -15,15 +15,17 @@ const (
 )
 
 type Config struct {
-	Auth string // username:password, used in the http-header()
-	Stop bool
+	Auth                     string // username:password, used in the http-header()
+	Stop                     bool   // TODO
+	client_conf_forward_host string // client's local network servier ip:host which data forward
 }
 
 var pConfig *Config
 
 func authOK(req *http.Request) bool {
-	if pConfig == nil || pConfig.Auth == "" {
-		return false
+	if pConfig == nil && pConfig.Auth == "" {
+		log.Info("did not need auth.")
+		return true
 	}
 
 	var auth = req.Header.Get("Authorization")
@@ -55,7 +57,7 @@ func ipforward(c net.Conn) {
 
 func ListenIPForwardAndWebsocketServ(forwardHostAndPort, websocketHostAndPort string, conf *Config) {
 	if conf == nil {
-		return
+		panic("config is nil.")
 	}
 	pConfig = conf
 	if pConfig.Auth != "" {
@@ -97,7 +99,7 @@ func listenWebsocketServ(hostAndPort string, websocketURI, contorlURI string) {
 		Handler:        nil,
 		ReadTimeout:    0 * time.Second,
 		WriteTimeout:   0 * time.Second,
-		MaxHeaderBytes: 1 << 20,
+		MaxHeaderBytes: 1 << 20, // 1M
 	}
 
 	err := svr.ListenAndServe()

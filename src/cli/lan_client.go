@@ -37,7 +37,7 @@ func setLocalForardHostAndPort(hostAndPort string) {
 }
 
 type Client struct {
-	WSocket     *websocket.Conn
+	webSocket   *websocket.Conn
 	localConn   *net.Conn
 	forwardData chan []byte // 从websock中接收到Binary数据，转发到localConn中
 	rw          *sync.RWMutex
@@ -45,38 +45,47 @@ type Client struct {
 
 func NewClient(ws *websocket.Conn) *Client {
 	client := &Client{
-		WSocket: ws,
-		rw:      new(sync.RWMutex),
+		webSocket: ws,
+		rw:        new(sync.RWMutex),
 	}
 	return client
 }
 
 func (client *Client) String() string {
-	return client.WSocket.String()
+	return client.webSocket.String()
 }
 
 func (c *Client) Write(b []byte) (int, error) {
-	err := c.WSocket.WriteBinary(b)
+	err := c.webSocket.WriteBinary(b)
 	return len(b), err
 }
 
-func (c *Client) tellServRequestFinish() {
+func (c *Client) tellServRequestFinish() error {
 	// tel the server this thread connect to the local-host was close or data tans finish.
-	c.WSocket.WriteString(ctrl.RquestFinishFrame)
+	return c.webSocket.WriteString(ctrl.RquestFinishFrame)
 }
 
-func (c *Client) tellServBusy() {
+func (c *Client) tellServBusy() error {
 	// tell the server this thread was busy
-	c.WSocket.WriteString(ctrl.ClientBusyFrame)
+	return c.webSocket.WriteString(ctrl.ClientBusyFrame)
 }
 
-func (c *Client) tellServError(err error) {
+func (c *Client) telServConfig() error {
+	frame := ctrl.WebSocketControlFrame{
+		Type:    ctrl.Msg_Get_Config,
+		Index:   0,
+		Content: pConfig.LocalHostServ,
+	}
+	return c.webSocket.WriteString(frame.Bytes())
+}
+
+func (c *Client) tellServError(err error) error {
 	frame := ctrl.WebSocketControlFrame{
 		Type:    ctrl.Msg_Sys_Err,
 		Index:   0,
 		Content: err.Error(),
 	}
-	c.WSocket.WriteString(frame.Bytes())
+	return c.webSocket.WriteString(frame.Bytes())
 }
 
 func (c *Client) connect2LoalNetwork() {
@@ -125,6 +134,10 @@ func (c *Client) closeLoalNetworkConnection(isReader bool) {
 	c.localConn = nil
 }
 
+func (c *Client) closeLocalConnect() {
+	c.closeLoalNetworkConnection(true)
+}
+
 func (c *Client) writerForward(writer io.Writer) {
 	buff := make([]byte, Default_Buffer_Size)
 	var err error
@@ -141,8 +154,8 @@ func (c *Client) writerForward(writer io.Writer) {
 		log.Error("Write to Local-network err=%s", err.Error())
 	}
 
-	log.Info("end writer forward.")
 	c.closeLoalNetworkConnection(false)
+	log.Info("end writer forward.")
 }
 
 func (c *Client) readForward(reader io.Reader) {
@@ -161,20 +174,14 @@ func (c *Client) readForward(reader io.Reader) {
 		log.Error("Write to Local-network err=%s", err.Error())
 	}
 
-	log.Info("end reader forward.")
 	c.closeLoalNetworkConnection(true)
+	log.Info("end reader forward.")
 }
 
-func (c *Client) close() {
-	if c.localConn != nil {
-		(*c.localConn).Close()
-	}
-}
-
-func (c *Client) handlerControlFrame(bFrame []byte) error {
+func (c *Client) handlerControlFrame(bFrame []byte) (err error) {
 	msg := ctrl.WebSocketControlFrame{}
 
-	if err := json.Unmarshal(bFrame, &msg); err != nil {
+	if err = json.Unmarshal(bFrame, &msg); err != nil {
 		log.Error("Recve a Text-Frame not JSON format. err=%v, frame=%v", err.Error(), string(bFrame))
 		return err
 	}
@@ -182,18 +189,20 @@ func (c *Client) handlerControlFrame(bFrame []byte) error {
 
 	switch msg.Type {
 	case ctrl.Msg_Request_Finish:
-		c.close()
+		c.closeLocalConnect()
 	case ctrl.Msg_New_Connection:
 		c.connect2LoalNetwork()
+	case ctrl.Msg_Get_Config:
+		err = c.telServConfig()
 	default:
 		log.Warn("no handler Msg T[%s]", msg.TypeStr())
 	}
-	return nil
+	return err
 }
 
 func (client *Client) waitForCommand() {
 	for {
-		frameType, bFrame, err := client.WSocket.Read()
+		frameType, bFrame, err := client.webSocket.Read()
 		log.Debug("TCP[%s] recv WebSocket Frame typ=[%v] size=[%d], crc32=[%d]",
 			client, frameTypStr(frameType), len(bFrame), crc32.ChecksumIEEE(bFrame))
 
@@ -203,22 +212,25 @@ func (client *Client) waitForCommand() {
 			} else {
 				log.Debug("TCP[%s] close the socket. EOF.", client)
 			}
-			client.close()
+			client.closeLocalConnect()
 			return
 		}
 
 		switch frameType {
 		case websocket.CloseMessage:
 			log.Info("TCP[%s] close Frame revced. end wait Frame loop", client)
-			client.close()
+			client.closeLocalConnect()
 			return
 		case websocket.TextMessage:
-			client.handlerControlFrame(bFrame)
+			err := client.handlerControlFrame(bFrame)
+			if err != nil {
+				log.Error("handlerControlFrame ret[%s]", err.Error())
+			}
 		case websocket.BinaryMessage:
 			client.forwardData <- bFrame
 			log.Debug("put frame to client.forwardData")
 		case websocket.PingMessage, websocket.PongMessage: // IE-11 会无端端发一个pong上来
-			client.WSocket.Pong(bFrame)
+			client.webSocket.Pong(bFrame)
 		default:
 			log.Warn("TODO: revce frame-type=%v. can not handler. content=%v", frameTypStr(frameType), string(bFrame))
 		}
@@ -227,8 +239,7 @@ func (client *Client) waitForCommand() {
 
 func Connect2Serv(forwardServ string, conf *Config) {
 	if conf == nil {
-		log.Error("config is nil.")
-		return
+		panic("config is nil.")
 	}
 	// global pConfig
 	pConfig = conf
@@ -256,16 +267,16 @@ func Connect2Serv(forwardServ string, conf *Config) {
 		return
 	}
 
-	ws.Ping([]byte("Ping"))
-	msgType, _, err := ws.Read()
-	if msgType != websocket.PongMessage {
-		log.Error("Unexpected frame Type[%d]", msgType)
-		return
-	}
+	// ws.Ping([]byte("Ping"))
+	// msgType, _, err := ws.Read()
+	// if msgType != websocket.PongMessage {
+	// 	log.Error("Unexpected frame Type[%d]", frameTypStr(msgType))
+	// 	return
+	// }
 
 	client := NewClient(ws)
 
-	log.Info("Connect[%s] websocket[%s] success, wait for server command.", serv, websockURI)
+	log.Info("Connect[%s] websocket[%s] success, wait for server command.", forwardServ, websockURI)
 	client.waitForCommand()
 
 	log.Info("client thread exist.")

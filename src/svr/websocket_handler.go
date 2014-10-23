@@ -18,41 +18,21 @@ import (
 	"time"
 )
 
-type wsClient struct {
-	WSocket *websocket.Conn
-	Req     *http.Request // websoket 对应的 Request
-
-	RW      *sync.RWMutex
-	Working bool //是否有绑定ip-forward
-
-	finish chan int       // 绑定连接的是否完成
-	Writer io.WriteCloser // ip-forward 绑定的连接
-}
-
-type onlineHost struct {
-	// 同一个HOST IP的连接集合
-	MapClients map[string]*wsClient // key is IP:Port
-}
-
-type allHosts struct {
-	Hosts map[string]*onlineHost //key is IP
-	RW    *sync.RWMutex
-}
-
 var frameTypStr = websocket.MsgTypeS
 
-func init() {
-	println("svr.websocket.init")
-}
+type wsClient struct {
+	websocket *websocket.Conn
+	req       *http.Request // websoket 对应的 Request
 
-// ==================
-var globalAllHosts = &allHosts{
-	Hosts: make(map[string]*onlineHost),
-	RW:    new(sync.RWMutex),
+	rw *sync.RWMutex
+
+	working       bool           //是否有绑定ip-forward连接
+	finish        chan int       // 绑定连接的是否完成
+	writerForward io.WriteCloser // ip-forward 绑定的连接
 }
 
 func (client *wsClient) String() string {
-	return client.Req.RemoteAddr
+	return client.req.RemoteAddr
 }
 
 func (c *wsClient) handlerControlMessage(bFrame []byte) error {
@@ -68,12 +48,14 @@ func (c *wsClient) handlerControlMessage(bFrame []byte) error {
 	case ctrl.Msg_Request_Finish:
 		c.closeWriter()
 	case ctrl.Msg_Client_Busy:
-		c.Writer.Write([]byte("current client was busy, pls try anthor."))
+		c.writerForward.Write([]byte("current client was busy, pls try anthor."))
 		c.closeWriter()
 	case ctrl.Msg_Sys_Err:
-		c.Writer.Write([]byte(msg.Content))
+		c.writerForward.Write([]byte(msg.Content))
 		c.closeWriter()
 	case ctrl.Msg_Get_Config:
+		log.Info("Get the Client- side local network server config[%s]", msg.Content)
+		pConfig.client_conf_forward_host = msg.Content
 	default:
 		log.Warn("no handler Msg T[%s]", msg.TypeStr())
 	}
@@ -81,31 +63,31 @@ func (c *wsClient) handlerControlMessage(bFrame []byte) error {
 }
 
 func (c *wsClient) closeWriter() {
-	if c.Writer == nil {
-		log.Warn("whan to close an nil client.Writer.")
+	if c.writerForward == nil {
+		log.Warn("whan to close an nil client.writerForward.")
 		return
 	}
-	c.RW.Lock()
-	defer c.RW.Unlock()
-	c.Writer.Close()
-	c.Working = false
+	c.rw.Lock()
+	defer c.rw.Unlock()
+	c.writerForward.Close()
+	c.working = false
 }
 
 func (c *wsClient) tellClientRequestFinish() {
-	c.WSocket.WriteString(ctrl.RquestFinishFrame)
+	c.websocket.WriteString(ctrl.RquestFinishFrame)
 }
 
 func (c *wsClient) tellClientNewConnection() {
-	c.WSocket.WriteString(ctrl.NewConnecttion)
+	c.websocket.WriteString(ctrl.NewConnecttion)
 }
 
 func (c *wsClient) tellClientNeedConfig() {
-	c.WSocket.WriteString(ctrl.GetClientConfig)
+	c.websocket.WriteString(ctrl.GetCilentConfig)
 }
 
 func (client *wsClient) waitForFrameLoop() {
 	for {
-		frameType, bFrame, err := client.WSocket.Read()
+		frameType, bFrame, err := client.websocket.Read()
 
 		log.Debug("TCP[%s] recv WebSocket Frame typ=[%v] size=[%d], crc32=[%d]",
 			client, frameTypStr(frameType), len(bFrame), crc32.ChecksumIEEE(bFrame))
@@ -129,12 +111,12 @@ func (client *wsClient) waitForFrameLoop() {
 			return
 		case websocket.BinaryMessage:
 			log.Info("TCP[%s] resv-binary: %v", client, len(bFrame))
-			if client.Writer == nil {
-				log.Warn("client.Writer is nil.")
+			if client.writerForward == nil {
+				log.Warn("client.writerForward is nil.")
 				continue
 			}
 
-			_, err := client.Writer.Write(bFrame)
+			_, err := client.writerForward.Write(bFrame)
 			if err != nil {
 				if err != io.EOF {
 					log.Error(err.Error())
@@ -144,7 +126,7 @@ func (client *wsClient) waitForFrameLoop() {
 			}
 
 		case websocket.PingMessage, websocket.PongMessage: // IE-11 会无端端发一个pong上来
-			client.WSocket.Pong(bFrame)
+			client.websocket.Pong(bFrame)
 		default:
 			log.Warn("TODO: revce frame-type=%v. can not handler. content=%v", frameTypStr(frameType), string(bFrame))
 		}
@@ -153,20 +135,17 @@ func (client *wsClient) waitForFrameLoop() {
 
 func getFreeClient() (*wsClient, error) {
 	var client *wsClient
-	for ip, host := range globalAllHosts.Hosts {
-		log.Info("finding in host[%s]:", ip)
-		for port, cli := range host.MapClients {
-			log.Info("\t finding Host:port[%s]", port)
-			cli.RW.Lock()
-			if !cli.Working {
-				client = cli
-				cli.Working = true
-				cli.RW.Unlock()
-				break
-			}
-			cli.RW.Unlock()
+	for _, cli := range _OnlineClient.onlines {
+		cli.rw.Lock()
+		if !cli.working {
+			client = cli
+			cli.working = true
+			cli.rw.Unlock()
+			break
 		}
+		cli.rw.Unlock()
 	}
+
 	if client == nil {
 		return nil, fmt.Errorf("no free-websocket connect found.")
 	}
@@ -180,7 +159,7 @@ func bindConnection(conn net.Conn) error {
 		return err
 	}
 
-	client.Writer = conn.(io.WriteCloser)
+	client.writerForward = conn.(io.WriteCloser)
 	client.tellClientNewConnection()
 
 	reader := conn.(io.Reader)
@@ -195,7 +174,7 @@ func bindConnection(conn net.Conn) error {
 			client.closeWriter()
 			break
 		}
-		client.WSocket.Write(p[:n], true)
+		client.websocket.Write(p[:n], true)
 	}
 
 	log.Info("BindConnection Request finish.")
@@ -203,10 +182,49 @@ func bindConnection(conn net.Conn) error {
 	return nil
 }
 
+type online struct {
+	onlines map[string]*wsClient // key is RemoteAddr=IP:Port
+	rw      *sync.RWMutex
+}
+
+// all online websocket connection.
+var _OnlineClient = &online{
+	onlines: make(map[string]*wsClient),
+	rw:      new(sync.RWMutex),
+}
+
+func newWebsocketClient(conn *websocket.Conn, r *http.Request) *wsClient {
+	var client = &wsClient{
+		websocket: conn,
+		working:   false,
+		rw:        new(sync.RWMutex),
+		req:       r,
+		finish:    make(chan int, 1),
+	}
+
+	_OnlineClient.rw.Lock()
+	defer _OnlineClient.rw.Unlock()
+
+	if cli, find := _OnlineClient.onlines[r.RemoteAddr]; find {
+		log.Warn("client[%s] is working[%s].", cli.req.RemoteAddr, cli.working)
+		panic("some closed client did not remove from _OnlineClient ?")
+	}
+
+	_OnlineClient.onlines[r.RemoteAddr] = client
+	return client
+}
+
+func websocketClose(r *http.Request) {
+	_OnlineClient.rw.RLock()
+	defer _OnlineClient.rw.RUnlock()
+	delete(_OnlineClient.onlines, r.RemoteAddr)
+}
+
 func WebsocketHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info("WebsocketHandler:%s %s %s", r.RemoteAddr, r.Method, r.URL.Path)
 
 	if !authOK(r) {
+		log.Warn("auth fail....")
 		noAuthResponse(w)
 		return
 	}
@@ -220,34 +238,18 @@ func WebsocketHandler(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadDeadline(time.Time{})
 	conn.SetWriteDeadline(time.Time{})
 
-	var client = &wsClient{
-		WSocket: conn,
-		Working: false,
-		RW:      new(sync.RWMutex),
-		Req:     r,
-		finish:  make(chan int, 1),
+	var client = newWebsocketClient(conn, r)
+
+	if pConfig.client_conf_forward_host == "" {
+		log.Info("pConfig.client_conf_forward_host is empty. tell Client Need the Config.")
+		client.tellClientNeedConfig()
 	}
 
-	var host *onlineHost
-	globalAllHosts.RW.RLock()
-	host, find := globalAllHosts.Hosts[r.Host]
-	if !find {
-		host = &onlineHost{
-			MapClients: make(map[string]*wsClient),
-		}
-		globalAllHosts.Hosts[r.Host] = host
-	}
-	host.MapClients[r.RemoteAddr] = client
-	globalAllHosts.RW.RUnlock()
-	log.Info("Put[%s] in", client)
+	log.Info("Put[%s] into the global Connect pool.", client)
+
 	client.waitForFrameLoop()
 
-	globalAllHosts.RW.RLock()
-	delete(host.MapClients, r.RemoteAddr)
-	if len(host.MapClients) == 0 {
-		delete(globalAllHosts.Hosts, r.Host)
-	}
-	globalAllHosts.RW.RUnlock()
+	websocketClose(r)
 
 	log.Debug("WebsocketHandler:%s closed.", r.RemoteAddr)
 }
