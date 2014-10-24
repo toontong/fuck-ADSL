@@ -16,7 +16,7 @@ Why
 How 如何实现
 ----
 1. 必需有台固定IP的外网服务器作中转。称为SVR，IP为：123.123.123.123
-2. 在SVR中跑程序 svr_main.go, 使用--help查看参数。假定监听 8080与8081
+2. 在SVR中跑程序 svr_main.go, 使用--help查看参数。假定监听 8080与8081[控制端口]
 2. 家里跑一台Linux服务器，我使用[Raspberry-Pi](https://github.com/toontong/Raspberry-Pi),功耗低。称为Pi,IP: 192.16.1.110
 3. 在Pi中跑 [mjgp-streamer](https://github.com/toontong/mjpg-streamer)，端口为8080
 4. 在Pi中跑 cli_main.go, 使用 --help查看参数。
@@ -24,7 +24,8 @@ How 如何实现
 
 已实现：
 ----
-http与ssh级别的数据中转。
+- http与ssh级别的数据中转。
+- SVR:8081/admin/ 实现对cli_main.go端中，loca-netword server的IP+port改变，即可同时运行多个mjpg-streamer
 
 TODO:
 -----
