@@ -17,7 +17,7 @@ const (
 	Msg_Request_Finish = 0x00001003
 	Msg_Client_Busy    = 0x00001004
 	Msg_Get_Config     = 0x00001005
-	Msg_Set_Config     = 0x00001005
+	Msg_Set_Config     = 0x00001006
 )
 
 //使用 websocket Text-Frame作为控制流。每Frame都是JSON格式

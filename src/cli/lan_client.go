@@ -26,6 +26,9 @@ var frameTypStr = websocket.MsgTypeS
 type Config struct {
 	LocalHostServ string `json:"LocalHostServ"`
 	WebsocketAuth string `json:"WebsocketAuth"`
+	MaxThread     int    `json:"MaxThread"`
+	currThread    int    `json:"CurrThread"`
+	orwardServ    string
 }
 
 var pConfig *Config
@@ -88,32 +91,37 @@ func (c *Client) tellServError(err error) error {
 	return c.webSocket.WriteString(frame.Bytes())
 }
 
-func (c *Client) connect2LoalNetwork() {
+func (c *Client) newConnect2LoalNetwork() error {
+	if pConfig.currThread < pConfig.MaxThread {
+		go Connect2Serv(pConfig.orwardServ, pConfig)
+	}
+
 	// 与本地局域网服务器g_localForwardHostAndPort 建立socket连接
 	c.rw.Lock()
 	defer c.rw.Unlock()
 
 	if c.localConn != nil {
-		log.Warn("thread is busy. can not create new connect.")
+		log.Warn("[%s], thread is busy. can not create new connect.", c)
 		c.tellServBusy()
-		return
+		return fmt.Errorf("[%s] thread is busy. can not create new connect.", c)
 	}
 
 	conn, err := net.Dial("tcp", g_localForwardHostAndPort)
 	if err != nil {
-		log.Error("Connect to[%s] err=%s", g_localForwardHostAndPort, err.Error())
+		log.Error("[%s] Connect to[%s] err=%s", c, g_localForwardHostAndPort, err.Error())
 		c.tellServError(err)
-		return
+		return err
 	}
 
 	go c.readForward(conn)
 
 	c.localConn = &conn
-	c.forwardData = make(chan []byte, Default_Channel_Size)
+	c.forwardData = make(chan []byte, Default_Channel_Size*4)
 
 	go c.writerForward(conn)
 
 	log.Info("new connection was create [%s]", conn.RemoteAddr())
+	return nil
 }
 
 func (c *Client) closeLoalNetworkConnection(isReader bool) {
@@ -132,6 +140,7 @@ func (c *Client) closeLoalNetworkConnection(isReader bool) {
 	c.tellServRequestFinish()
 	log.Info("connection was close[%s]", (*c.localConn).RemoteAddr())
 	c.localConn = nil
+	close(c.forwardData)
 }
 
 func (c *Client) closeLocalConnect() {
@@ -188,11 +197,14 @@ func (c *Client) handlerControlFrame(bFrame []byte) (err error) {
 	log.Info("TCP[%v] Get Frame T[%v], Content=%v, index=%v, ", c, msg.TypeStr(), msg.Content, msg.Index)
 
 	switch msg.Type {
+	case ctrl.Msg_New_Connection:
+		c.newConnect2LoalNetwork()
 	case ctrl.Msg_Request_Finish:
 		c.closeLocalConnect()
-	case ctrl.Msg_New_Connection:
-		c.connect2LoalNetwork()
 	case ctrl.Msg_Get_Config:
+		err = c.telServConfig()
+	case ctrl.Msg_Set_Config:
+		pConfig.LocalHostServ = msg.Content
 		err = c.telServConfig()
 	default:
 		log.Warn("no handler Msg T[%s]", msg.TypeStr())
@@ -227,8 +239,14 @@ func (client *Client) waitForCommand() {
 				log.Error("handlerControlFrame ret[%s]", err.Error())
 			}
 		case websocket.BinaryMessage:
-			client.forwardData <- bFrame
-			log.Debug("put frame to client.forwardData")
+			log.Info("put Binary-Data to chan-len[%d]", len(client.forwardData))
+			select {
+			case client.forwardData <- bFrame:
+				log.Info("put frame to client.forwardData len[%d] end", len(client.forwardData))
+			default:
+				log.Warn("[%s] is busy", client)
+				client.tellServBusy()
+			}
 		case websocket.PingMessage, websocket.PongMessage: // IE-11 会无端端发一个pong上来
 			client.webSocket.Pong(bFrame)
 		default:
@@ -243,6 +261,7 @@ func Connect2Serv(forwardServ string, conf *Config) {
 	}
 	// global pConfig
 	pConfig = conf
+	pConfig.orwardServ = forwardServ
 
 	var localServ, auth = conf.LocalHostServ, conf.WebsocketAuth
 
@@ -250,9 +269,10 @@ func Connect2Serv(forwardServ string, conf *Config) {
 
 	websockURI := ctrl.WEBSOCKET_CONNECT_URI
 
+	log.Info("start TCP connect to[%s]", forwardServ)
 	conn, err := net.Dial("tcp", forwardServ)
 	if err != nil {
-		log.Error(err.Error())
+		log.Error("connect[%s] fail err=[%s]", forwardServ, err.Error())
 		return
 	}
 	var headers http.Header
@@ -261,23 +281,18 @@ func Connect2Serv(forwardServ string, conf *Config) {
 		headers.Add("Authorization", fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(auth))))
 	}
 
+	log.Info("start websocket NewClient to[%s][%s]", forwardServ, websockURI)
 	ws, _, err := websocket.NewClient(conn, &url.URL{Host: forwardServ, Path: websockURI}, headers)
 	if err != nil {
 		log.Error("Connect to[%s] err=%s", forwardServ, err.Error())
 		return
 	}
 
-	// ws.Ping([]byte("Ping"))
-	// msgType, _, err := ws.Read()
-	// if msgType != websocket.PongMessage {
-	// 	log.Error("Unexpected frame Type[%d]", frameTypStr(msgType))
-	// 	return
-	// }
-
 	client := NewClient(ws)
+	log.Info("Connect[%s] success at[%s], wait for server command.", forwardServ, client)
 
-	log.Info("Connect[%s] websocket[%s] success, wait for server command.", forwardServ, websockURI)
+	pConfig.currThread++
 	client.waitForCommand()
-
+	pConfig.currThread--
 	log.Info("client thread exist.")
 }

@@ -4,10 +4,13 @@ import (
 	"cli"
 	"flag"
 	"libs/log"
+	"os"
+	"os/signal"
+	"time"
 )
 
 const (
-	MIN_THREAD = 4
+	MIN_THREAD = 8
 )
 
 var _ForwardServer string
@@ -24,7 +27,18 @@ func init() {
 	flag.StringVar(&_AuthUserPassword, "auth", "", "websocket connect used auth string[username:passwrod], default is no auth.")
 	flag.StringVar(&_LocalNetworkHost, "l", "127.0.0.1:8000", "local-network host which can not listen WLAN-IP.")
 	flag.StringVar(&_LogLevel, "log", "warn", "log level [warn|error|debug|info], output the stdout.")
-	flag.IntVar(&_ForwardTHread, "n", MIN_THREAD, "conut of the thread which read for local-host to the forward-server, min is 4.")
+	flag.IntVar(&_ForwardTHread, "n", MIN_THREAD, "conut of the thread which read for local-host to the forward-server, min is 8.")
+}
+
+var stop bool
+
+func onSignal() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, os.Kill)
+
+	// Block until a signal is received.
+	<-c
+	stop = true
 }
 
 func main() {
@@ -41,12 +55,19 @@ func main() {
 	conf := &cli.Config{
 		LocalHostServ: _LocalNetworkHost,
 		WebsocketAuth: _AuthUserPassword,
+		MaxThread:     _ForwardTHread,
 	}
-
-	for i := 0; i < _ForwardTHread-1; i++ {
-		go cli.Connect2Serv(_ForwardServer, conf)
+	const (
+		default_sleep_time = 10 * time.Second
+	)
+	for {
+		cli.Connect2Serv(_ForwardServer, conf)
+		if stop {
+			break
+		} else {
+			log.Info("Connect2Serv fail, wait[%s]Second.", default_sleep_time)
+			time.Sleep(default_sleep_time)
+		}
 	}
-	cli.Connect2Serv(_ForwardServer, conf)
-
-	log.Info("main end .")
+	log.Info("------------------- main end ------------------------")
 }

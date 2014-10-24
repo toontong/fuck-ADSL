@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	WEBSOCKET_CONTORL_URI = "/admin"
+	WEBSOCKET_CONTORL_URI = "/admin/"
 )
 
 type Config struct {
@@ -34,11 +34,15 @@ func authOK(req *http.Request) bool {
 	return auth == pConfig.Auth
 }
 
-func noAuthResponse(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("WWW-Authenticate", "Basic realm=\"TCP-Forward-Serv\"")
+func setSTDheader(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0")
 	w.Header().Set("Expires", "Mon, 3 Jan 2000 12:34:56 GMT")
+}
+
+func noAuthResponse(w http.ResponseWriter) {
+	setSTDheader(w)
+	w.Header().Set("WWW-Authenticate", "Basic realm=\"TCP-Forward-Serv\"")
 	w.WriteHeader(401)
 	w.Write([]byte(`401: Not Authenticated!username and password do not match to configuration`))
 }
@@ -50,8 +54,8 @@ func ipforward(c net.Conn) {
 	err := bindConnection(c)
 
 	if err != nil {
-		log.Error("Forward PutConnection err=%s", err.Error())
 		c.Write([]byte(err.Error())) //c maybe closed.
+		log.Error("Forward PutConnection err=%s", err.Error())
 	}
 }
 
@@ -91,7 +95,8 @@ func listenWebsocketServ(hostAndPort string, websocketURI, contorlURI string) {
 	// TODO：连接认证
 	http.HandleFunc(websocketURI, WebsocketHandler)
 
-	http.HandleFunc(contorlURI, HttpAdminHandler)
+	http.HandleFunc(contorlURI, httpAdminHandler)
+	http.HandleFunc("/api/", httpApiHandler)
 
 	log.Info("Websocket Listen in TCP[%s]", hostAndPort)
 	svr := &http.Server{

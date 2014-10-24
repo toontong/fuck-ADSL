@@ -81,8 +81,17 @@ func (c *wsClient) tellClientNewConnection() {
 	c.websocket.WriteString(ctrl.NewConnecttion)
 }
 
-func (c *wsClient) tellClientNeedConfig() {
-	c.websocket.WriteString(ctrl.GetCilentConfig)
+func (c *wsClient) tellClientNeedConfig() error {
+	return c.websocket.WriteString(ctrl.GetCilentConfig)
+}
+
+func (c *wsClient) tellClientSetConfig(svr string) error {
+	frame := ctrl.WebSocketControlFrame{
+		Type:    ctrl.Msg_Set_Config,
+		Index:   0,
+		Content: svr,
+	}
+	return c.websocket.WriteString(frame.Bytes())
 }
 
 func (client *wsClient) waitForFrameLoop() {
